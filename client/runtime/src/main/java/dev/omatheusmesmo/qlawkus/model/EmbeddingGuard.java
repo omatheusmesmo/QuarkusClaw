@@ -6,12 +6,16 @@ import dev.omatheusmesmo.qlawkus.metrics.AgentMeters;
 import dev.omatheusmesmo.qlawkus.metrics.CircuitStates;
 import io.quarkus.runtime.Startup;
 import io.smallrye.faulttolerance.api.CircuitBreakerMaintenance;
+import io.quarkus.logging.Log;
 import io.smallrye.faulttolerance.api.TypedGuard;
+import org.eclipse.microprofile.faulttolerance.exceptions.BulkheadException;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenException;
@@ -36,17 +40,26 @@ public class EmbeddingGuard {
     private static final List<Class<? extends Throwable>> NON_RETRYABLE =
             List.of(NonRetriableException.class, UnsupportedFeatureException.class);
 
-    private final TypedGuard<Object> guard;
+    private final Map<String, TypedGuard<Object>> guards = new LinkedHashMap<>();
+    private final WorkloadGuards workloads;
     private final AgentMeters meters;
     private final ThreadLocal<Supplier<Object>> currentFallback = new ThreadLocal<>();
 
     @Inject
-    public EmbeddingGuard(ModelFallbackConfig config, AgentMeters meters) {
+    public EmbeddingGuard(ModelFallbackConfig config, AgentMeters meters, WorkloadGuards workloads) {
         this.meters = meters;
+        this.workloads = workloads;
+        for (String workload : workloads.names()) {
+            guards.put(workload, buildGuard(config, workload));
+        }
+    }
+
+    /** One guard per workload, each with its own breaker and bulkhead. See {@link PrimaryChatGuard}. */
+    private TypedGuard<Object> buildGuard(ModelFallbackConfig config, String workload) {
         List<Class<? extends Throwable>> abortsOn = new ArrayList<>(NON_RETRYABLE);
         abortsOn.add(CircuitBreakerOpenException.class);
 
-        this.guard = TypedGuard.create(Object.class)
+        TypedGuard.Builder<Object> builder = TypedGuard.create(Object.class)
                 .withRetry()
                 .maxRetries(config.retryMaxAttempts())
                 .abortOn(List.copyOf(abortsOn))
@@ -56,17 +69,28 @@ public class EmbeddingGuard {
                 .done()
                 .done()
                 .withCircuitBreaker()
-                .name(ModelFallbackConfig.CIRCUIT_BREAKER_EMBEDDING)
+                .name(workloads.breakerName(WorkloadGuards.EMBEDDING, workload))
                 .requestVolumeThreshold(config.retryMaxAttempts() + 1)
                 .failureRatio(1.0)
                 .delay(config.circuitBreakerResetTimeout().toMillis(), ChronoUnit.MILLIS)
                 .skipOn(NON_RETRYABLE)
                 .done()
                 .withFallback()
-                .skipOn(NON_RETRYABLE)
+                .skipOn(rejectionAborts(workload))
                 .handler(cause -> onFallback())
-                .done()
-                .build();
+                .done();
+        workloads.applyBulkhead(builder, workload);
+        return builder.build();
+    }
+
+    /** See {@link PrimaryChatGuard}: a throttled background embed skips rather than using Ollama. */
+    private List<Class<? extends Throwable>> rejectionAborts(String workload) {
+        if (workloads.policy(workload).fallbackOnReject()) {
+            return NON_RETRYABLE;
+        }
+        List<Class<? extends Throwable>> aborts = new ArrayList<>(NON_RETRYABLE);
+        aborts.add(BulkheadException.class);
+        return List.copyOf(aborts);
     }
 
     /**
@@ -77,8 +101,11 @@ public class EmbeddingGuard {
      */
     @PostConstruct
     void publishCircuitState() {
-        meters.circuitState(AgentMeters.SURFACE_EMBEDDING, this, guard -> CircuitStates.code(
-                CircuitBreakerMaintenance.get().currentState(ModelFallbackConfig.CIRCUIT_BREAKER_EMBEDDING)));
+        for (String workload : guards.keySet()) {
+            String breaker = workloads.breakerName(WorkloadGuards.EMBEDDING, workload);
+            meters.circuitState(AgentMeters.SURFACE_EMBEDDING, workload, this,
+                    guard -> CircuitStates.code(CircuitBreakerMaintenance.get().currentState(breaker)));
+        }
     }
 
     /**
@@ -95,9 +122,19 @@ public class EmbeddingGuard {
     public <T> T call(Supplier<T> primary, Supplier<T> fallback) {
         currentFallback.set((Supplier<Object>) fallback);
         try {
-            return (T) guard.get((Supplier<Object>) primary);
+            return (T) guardFor(WorkloadContext.current()).get((Supplier<Object>) primary);
         } finally {
             currentFallback.remove();
         }
+    }
+
+    /** An unknown workload falls back to the interactive guard rather than failing the call. */
+    private TypedGuard<Object> guardFor(String workload) {
+        TypedGuard<Object> guard = guards.get(workload);
+        if (guard == null) {
+            Log.warnf("Unknown model workload '%s', using %s", workload, WorkloadContext.INTERACTIVE);
+            return guards.get(WorkloadContext.INTERACTIVE);
+        }
+        return guard;
     }
 }

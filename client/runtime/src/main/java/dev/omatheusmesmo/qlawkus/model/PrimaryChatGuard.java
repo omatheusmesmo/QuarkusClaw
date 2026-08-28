@@ -7,12 +7,16 @@ import dev.omatheusmesmo.qlawkus.metrics.AgentMeters;
 import dev.omatheusmesmo.qlawkus.metrics.CircuitStates;
 import io.quarkus.runtime.Startup;
 import io.smallrye.faulttolerance.api.CircuitBreakerMaintenance;
+import io.quarkus.logging.Log;
 import io.smallrye.faulttolerance.api.TypedGuard;
+import org.eclipse.microprofile.faulttolerance.exceptions.BulkheadException;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.faulttolerance.exceptions.CircuitBreakerOpenException;
@@ -57,14 +61,29 @@ public class PrimaryChatGuard {
         return List.copyOf(combined);
     }
 
-    private final TypedGuard<ChatResponse> guard;
+    private final Map<String, TypedGuard<ChatResponse>> guards = new LinkedHashMap<>();
+    private final WorkloadGuards workloads;
     private final AgentMeters meters;
     private final ThreadLocal<Supplier<ChatResponse>> currentFallback = new ThreadLocal<>();
 
     @Inject
-    public PrimaryChatGuard(ModelFallbackConfig config, AgentMeters meters) {
+    public PrimaryChatGuard(ModelFallbackConfig config, AgentMeters meters, WorkloadGuards workloads) {
         this.meters = meters;
-        this.guard = TypedGuard.create(ChatResponse.class)
+        this.workloads = workloads;
+        for (String workload : workloads.names()) {
+            guards.put(workload, buildGuard(config, workload));
+        }
+    }
+
+    /**
+     * Builds one guard per workload. Each guard object carries its own breaker and bulkhead instance,
+     * which is what makes the isolation real: a batch job that trips its breaker cannot open the one
+     * the owner's next message goes through. Guards are built once per workload at startup and never
+     * on a call path, both because construction is not cheap and because breaker names must stay
+     * unique - the library will not object if they collide.
+     */
+    private TypedGuard<ChatResponse> buildGuard(ModelFallbackConfig config, String workload) {
+        TypedGuard.Builder<ChatResponse> builder = TypedGuard.create(ChatResponse.class)
                 .withRetry()
                 .maxRetries(config.retryMaxAttempts())
                 .abortOn(RETRY_ABORTS_ON)
@@ -74,17 +93,32 @@ public class PrimaryChatGuard {
                 .done()
                 .done()
                 .withCircuitBreaker()
-                .name(ModelFallbackConfig.CIRCUIT_BREAKER_CHAT)
+                .name(workloads.breakerName(WorkloadGuards.CHAT, workload))
                 .requestVolumeThreshold(config.retryMaxAttempts() + 1)
                 .failureRatio(1.0)
                 .delay(config.circuitBreakerResetTimeout().toMillis(), ChronoUnit.MILLIS)
                 .skipOn(NON_RETRYABLE)
                 .done()
                 .withFallback()
-                .skipOn(NON_RETRYABLE)
+                .skipOn(rejectionAborts(workload))
                 .handler(cause -> onFallback())
-                .done()
-                .build();
+                .done();
+        workloads.applyBulkhead(builder, workload);
+        return builder.build();
+    }
+
+    /**
+     * What the fallback refuses to mask for this workload. A workload that does not fall back on
+     * rejection adds {@code BulkheadException} here, so a throttled background call abandons the run
+     * instead of spending the secondary provider on work nobody is waiting for. A synchronous
+     * bulkhead rejects rather than queues, so without this every throttled job would quietly
+     * re-target the fallback.
+     */
+    private List<Class<? extends Throwable>> rejectionAborts(String workload) {
+        if (workloads.policy(workload).fallbackOnReject()) {
+            return NON_RETRYABLE;
+        }
+        return concat(NON_RETRYABLE, BulkheadException.class);
     }
 
     /**
@@ -95,8 +129,11 @@ public class PrimaryChatGuard {
      */
     @PostConstruct
     void publishCircuitState() {
-        meters.circuitState(AgentMeters.SURFACE_CHAT, this, guard -> CircuitStates.code(
-                CircuitBreakerMaintenance.get().currentState(ModelFallbackConfig.CIRCUIT_BREAKER_CHAT)));
+        for (String workload : guards.keySet()) {
+            String breaker = workloads.breakerName(WorkloadGuards.CHAT, workload);
+            meters.circuitState(AgentMeters.SURFACE_CHAT, workload, this,
+                    guard -> CircuitStates.code(CircuitBreakerMaintenance.get().currentState(breaker)));
+        }
     }
 
     /**
@@ -117,9 +154,23 @@ public class PrimaryChatGuard {
     public ChatResponse call(Supplier<ChatResponse> primary, Supplier<ChatResponse> fallback) {
         currentFallback.set(fallback);
         try {
-            return guard.get(primary);
+            return guardFor(WorkloadContext.current()).get(primary);
         } finally {
             currentFallback.remove();
         }
+    }
+
+    /**
+     * An unknown workload resolves to the interactive guard rather than failing. A name that reaches
+     * here without a guard is a configuration mistake, and refusing the call would turn a typo into
+     * an outage on the path a person is waiting on.
+     */
+    private TypedGuard<ChatResponse> guardFor(String workload) {
+        TypedGuard<ChatResponse> guard = guards.get(workload);
+        if (guard == null) {
+            Log.warnf("Unknown model workload '%s', using %s", workload, WorkloadContext.INTERACTIVE);
+            return guards.get(WorkloadContext.INTERACTIVE);
+        }
+        return guard;
     }
 }

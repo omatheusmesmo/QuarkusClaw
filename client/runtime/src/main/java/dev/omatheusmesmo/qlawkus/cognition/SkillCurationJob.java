@@ -3,10 +3,12 @@ package dev.omatheusmesmo.qlawkus.cognition;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.omatheusmesmo.qlawkus.config.SkillsConfig;
 import dev.omatheusmesmo.qlawkus.metrics.AgentMeters;
+import dev.omatheusmesmo.qlawkus.model.WorkloadContext;
 import dev.omatheusmesmo.qlawkus.skill.SkillStore;
 import dev.omatheusmesmo.qlawkus.skill.SkillSummary;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.scheduler.Scheduled.ConcurrentExecution;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -33,10 +35,11 @@ public class SkillCurationJob {
   @Inject
   SkillsConfig config;
 
-  @Scheduled(identity = "skill-curation", cron = "{qlawkus.skills.curation.cron:0 50 3 * * ?}")
+  @Scheduled(identity = "skill-curation", concurrentExecution = ConcurrentExecution.SKIP, cron = "{qlawkus.skills.curation.cron:0 50 3 * * ?}")
   void curate() {
     if (config.curation().enabled()) {
-      meters.timeJob("skill-curation", this::curateNow);
+      WorkloadContext.runAs(WorkloadContext.BATCH,
+          () -> meters.timeJob("skill-curation", this::curateNow));
     }
   }
 

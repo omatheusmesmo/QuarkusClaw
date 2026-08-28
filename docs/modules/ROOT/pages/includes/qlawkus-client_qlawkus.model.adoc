@@ -196,6 +196,50 @@ endif::add-copy-button-to-env-var[]
 |link:https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/Duration.html[Duration] link:#duration-note-anchor-qlawkus-client_qlawkus-model[icon:question-circle[title=More information about the Duration format]]
 |`+++120S+++`
 
+a| [[qlawkus-client_qlawkus-model-workload-workloads-max-concurrent]] [.property-path]##link:#qlawkus-client_qlawkus-model-workload-workloads-max-concurrent[`+++qlawkus.model.workload."workloads".max-concurrent+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++qlawkus.model.workload."workloads".max-concurrent+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+How many calls of this workload may reach the model at once. `0` disables the bulkhead entirely, which is what the interactive workload wants: the owner's turn should never be refused because another turn is in flight.
+
+A synchronous bulkhead does not queue. SmallRye queues excess callers only for asynchronous actions, and a chat completion is synchronous here, so exceeding this limit raises `BulkheadException` immediately. For background work that is the intended behaviour - the run is abandoned and the schedule retries it - but it is the reason this must stay `0` for anything a person is waiting on.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QLAWKUS_MODEL_WORKLOAD__WORKLOADS__MAX_CONCURRENT+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QLAWKUS_MODEL_WORKLOAD__WORKLOADS__MAX_CONCURRENT+++`
+endif::add-copy-button-to-env-var[]
+--
+|int
+|`+++0+++`
+
+a| [[qlawkus-client_qlawkus-model-workload-workloads-fallback-on-reject]] [.property-path]##link:#qlawkus-client_qlawkus-model-workload-workloads-fallback-on-reject[`+++qlawkus.model.workload."workloads".fallback-on-reject+++`]##
+ifdef::add-copy-button-to-config-props[]
+config_property_copy_button:+++qlawkus.model.workload."workloads".fallback-on-reject+++[]
+endif::add-copy-button-to-config-props[]
+
+
+[.description]
+--
+Whether a rejected call may fall back to the secondary provider. Background work sets this false: a job that was throttled on purpose should skip its run, not spend the fallback provider doing work nobody is waiting for.
+
+
+ifdef::add-copy-button-to-env-var[]
+Environment variable: env_var_with_copy_button:+++QLAWKUS_MODEL_WORKLOAD__WORKLOADS__FALLBACK_ON_REJECT+++[]
+endif::add-copy-button-to-env-var[]
+ifndef::add-copy-button-to-env-var[]
+Environment variable: `+++QLAWKUS_MODEL_WORKLOAD__WORKLOADS__FALLBACK_ON_REJECT+++`
+endif::add-copy-button-to-env-var[]
+--
+|boolean
+|`+++true+++`
+
 |===
 
 ifndef::no-duration-note[]

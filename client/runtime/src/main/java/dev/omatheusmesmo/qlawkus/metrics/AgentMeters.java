@@ -48,6 +48,9 @@ public class AgentMeters {
 
     /** Model surfaces. Separate breakers, because chat and embeddings can fail independently. */
     public static final String SURFACE_CHAT = "chat";
+    /** Default workload tag, so the pre-workload gauge keeps a stable label set. */
+    public static final String WORKLOAD_INTERACTIVE = "interactive";
+
     public static final String SURFACE_EMBEDDING = "embedding";
 
     public static final String TOOL_INVOCATIONS = "qlawkus.tool.invocations";
@@ -59,6 +62,7 @@ public class AgentMeters {
     private static final String TAG_OUTCOME = "outcome";
     private static final String TAG_JOB = "job";
     private static final String TAG_SURFACE = "surface";
+    private static final String TAG_WORKLOAD = "workload";
     private static final String TAG_TOOL = "tool";
     private static final String TAG_STORE = "store";
     private static final String TAG_BACKEND = "backend";
@@ -220,8 +224,18 @@ public class AgentMeters {
      * supplier is polled rather than pushed so the breaker is never mutated by being observed.
      */
     public <T> void circuitState(String surface, T source, ToDoubleFunction<T> state) {
+        circuitState(surface, WORKLOAD_INTERACTIVE, source, state);
+    }
+
+    /**
+     * Publishes one breaker gauge per workload. The workload tag is what makes a batch-induced open
+     * breaker distinguishable from one the interactive path opened, which is the whole question the
+     * isolation was built to answer.
+     */
+    public <T> void circuitState(String surface, String workload, T source, ToDoubleFunction<T> state) {
         if (registry != null) {
-            registry.gauge(MODEL_CIRCUIT_STATE, Tags.of(TAG_SURFACE, surface), source, state);
+            registry.gauge(MODEL_CIRCUIT_STATE, Tags.of(TAG_SURFACE, surface, TAG_WORKLOAD, workload),
+                    source, state);
         }
     }
 

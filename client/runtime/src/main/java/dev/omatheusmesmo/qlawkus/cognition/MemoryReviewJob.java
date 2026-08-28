@@ -2,9 +2,11 @@ package dev.omatheusmesmo.qlawkus.cognition;
 
 import dev.omatheusmesmo.qlawkus.config.MemoryReviewConfig;
 import dev.omatheusmesmo.qlawkus.metrics.AgentMeters;
+import dev.omatheusmesmo.qlawkus.model.WorkloadContext;
 import dev.omatheusmesmo.qlawkus.store.FactStore;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.scheduler.Scheduled.ConcurrentExecution;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -26,9 +28,10 @@ public class MemoryReviewJob {
   @Inject
   MemoryReviewConfig config;
 
-  @Scheduled(identity = "memory-review", cron = "{qlawkus.memory-review.cron:0 30 3 * * ?}")
+  @Scheduled(identity = "memory-review", concurrentExecution = ConcurrentExecution.SKIP, cron = "{qlawkus.memory-review.cron:0 30 3 * * ?}")
   void review() {
-    meters.timeJob("memory-review", this::reviewNow);
+    WorkloadContext.runAs(WorkloadContext.BATCH,
+        () -> meters.timeJob("memory-review", this::reviewNow));
   }
 
   public long reviewNow() {

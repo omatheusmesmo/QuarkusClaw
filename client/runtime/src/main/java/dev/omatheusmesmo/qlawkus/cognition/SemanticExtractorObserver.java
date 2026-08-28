@@ -2,6 +2,7 @@ package dev.omatheusmesmo.qlawkus.cognition;
 
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.omatheusmesmo.qlawkus.model.WorkloadContext;
 import dev.omatheusmesmo.qlawkus.config.AgentConfig;
 import dev.omatheusmesmo.qlawkus.store.FactStore;
 import dev.omatheusmesmo.qlawkus.store.MemorySource;
@@ -47,7 +48,8 @@ public class SemanticExtractorObserver {
         Conversation:
         %s""".formatted(conversation);
 
-      String response = chatModel.chat(extractionPrompt);
+      String response = WorkloadContext.callAs(WorkloadContext.BATCH,
+          () -> chatModel.chat(extractionPrompt));
       if (response == null || response.isBlank()) return;
 
       for (String line : response.split("\n")) {

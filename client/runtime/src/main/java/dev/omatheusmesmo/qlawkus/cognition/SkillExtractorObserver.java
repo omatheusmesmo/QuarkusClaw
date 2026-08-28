@@ -2,6 +2,7 @@ package dev.omatheusmesmo.qlawkus.cognition;
 
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.omatheusmesmo.qlawkus.model.WorkloadContext;
 import dev.omatheusmesmo.qlawkus.config.SkillsConfig;
 import dev.omatheusmesmo.qlawkus.skill.Skill;
 import dev.omatheusmesmo.qlawkus.skill.SkillStore;
@@ -59,7 +60,8 @@ public class SkillExtractorObserver {
           Conversation:
           %s""".formatted(conversation);
 
-      Optional<Skill> skill = parse(chatModel.chat(prompt));
+      Optional<Skill> skill = parse(WorkloadContext.callAs(WorkloadContext.BATCH,
+          () -> chatModel.chat(prompt)));
       skill.ifPresent(s -> {
         skillStore.save(s);
         Log.infof("Skill distilled: %s", s.name());

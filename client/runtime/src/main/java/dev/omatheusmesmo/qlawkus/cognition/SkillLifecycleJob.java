@@ -2,9 +2,11 @@ package dev.omatheusmesmo.qlawkus.cognition;
 
 import dev.omatheusmesmo.qlawkus.config.SkillsConfig;
 import dev.omatheusmesmo.qlawkus.metrics.AgentMeters;
+import dev.omatheusmesmo.qlawkus.model.WorkloadContext;
 import dev.omatheusmesmo.qlawkus.skill.SkillStore;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.scheduler.Scheduled.ConcurrentExecution;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -26,10 +28,11 @@ public class SkillLifecycleJob {
   @Inject
   SkillsConfig config;
 
-  @Scheduled(identity = "skill-lifecycle", cron = "{qlawkus.skills.lifecycle.cron:0 40 3 * * ?}")
+  @Scheduled(identity = "skill-lifecycle", concurrentExecution = ConcurrentExecution.SKIP, cron = "{qlawkus.skills.lifecycle.cron:0 40 3 * * ?}")
   void sweep() {
     if (config.lifecycle().enabled()) {
-      meters.timeJob("skill-lifecycle", this::sweepNow);
+      WorkloadContext.runAs(WorkloadContext.BATCH,
+          () -> meters.timeJob("skill-lifecycle", this::sweepNow));
     }
   }
 

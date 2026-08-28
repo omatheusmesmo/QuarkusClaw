@@ -1,11 +1,14 @@
 package dev.omatheusmesmo.qlawkus.health;
 
 import dev.omatheusmesmo.qlawkus.model.ModelFallbackConfig;
+import dev.omatheusmesmo.qlawkus.model.WorkloadContext;
+import dev.omatheusmesmo.qlawkus.model.WorkloadGuards;
 import io.smallrye.faulttolerance.api.CircuitBreakerMaintenance;
 import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.health.HealthCheck;
 import org.eclipse.microprofile.health.HealthCheckResponse;
+import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
 import org.eclipse.microprofile.health.Readiness;
 
 /**
@@ -35,20 +38,41 @@ public class ModelReadinessCheck implements HealthCheck {
     @Inject
     ModelFallbackConfig config;
 
+    @Inject
+    WorkloadGuards workloads;
+
+    /**
+     * Readiness answers whether this instance can serve, so only the interactive workload decides the
+     * status. A background breaker that opened is reported as data and nothing more: letting it turn
+     * the pod unready would rebuild, in the health layer, exactly the coupling the workloads were
+     * introduced to remove - a nightly job taking the instance out of rotation.
+     */
     @Override
     public HealthCheckResponse call() {
-        CircuitBreakerState chat = CircuitBreakerMaintenance.get().currentState(ModelFallbackConfig.CIRCUIT_BREAKER_CHAT);
-        CircuitBreakerState embedding =
-                CircuitBreakerMaintenance.get().currentState(ModelFallbackConfig.CIRCUIT_BREAKER_EMBEDDING);
+        CircuitBreakerState chat = stateOf(WorkloadGuards.CHAT, WorkloadContext.INTERACTIVE);
+        CircuitBreakerState embedding = stateOf(WorkloadGuards.EMBEDDING, WorkloadContext.INTERACTIVE);
         boolean fallbackEnabled = config.fallbackEnabled();
-        boolean anyOpenWithNoFallback =
+        boolean servingBlocked =
                 (chat == CircuitBreakerState.OPEN || embedding == CircuitBreakerState.OPEN) && !fallbackEnabled;
 
-        return HealthCheckResponse.named(NAME)
-                .status(!anyOpenWithNoFallback)
+        HealthCheckResponseBuilder response = HealthCheckResponse.named(NAME)
+                .status(!servingBlocked)
                 .withData("chatCircuit", chat.name())
                 .withData("embeddingCircuit", embedding.name())
-                .withData("fallbackEnabled", fallbackEnabled)
-                .build();
+                .withData("fallbackEnabled", fallbackEnabled);
+
+        for (String workload : workloads.names()) {
+            if (WorkloadContext.INTERACTIVE.equals(workload)) {
+                continue;
+            }
+            response.withData(workload + "ChatCircuit", stateOf(WorkloadGuards.CHAT, workload).name());
+            response.withData(workload + "EmbeddingCircuit",
+                    stateOf(WorkloadGuards.EMBEDDING, workload).name());
+        }
+        return response.build();
+    }
+
+    private CircuitBreakerState stateOf(String surface, String workload) {
+        return CircuitBreakerMaintenance.get().currentState(workloads.breakerName(surface, workload));
     }
 }

@@ -251,6 +251,22 @@ Two rules keep that correct rather than decorative. It goes on **one HTTP call, 
 
 **Readiness and liveness answer different questions.** Liveness deliberately does not consult the model: killing the pod because the provider is down would turn their incident into an outage here, and the restarted pod would meet the same provider. `examples/redeploy/k8s/deployment.yaml` carries the probe trio (the startup probe absorbs the order-of-magnitude gap between JVM and native boot), and the Compose stacks poll the same `/q/health/ready`, so both deploy paths agree on what "serving" means.
 
+## Model workloads
+
+The agent talks to one provider for two different reasons: answering the owner, and doing background work about the owner. Sharing fault-tolerance state between them is the defect - a nightly job that trips the provider's rate limit opens the breaker the owner's next message goes through, so the agent answers from the fallback because it was busy talking to itself.
+
+Workloads are named in configuration (`qlawkus.model.workload.<name>.*`, `RUN_TIME`, so reachable from `/api/admin/runtime-toggles`), keyed like `MessagingConfig`. `interactive` and `batch` always exist; more can be declared without code. `PrimaryChatGuard` and `EmbeddingGuard` build **one `TypedGuard` per workload** at startup, and that is what makes the isolation structural rather than conventional: SmallRye gives each guard object its own instance of every strategy, so two guards cannot share breaker state.
+
+**A `TypedGuard`, not `@ApplyGuard`.** The reusable-guard mechanism is the more elegant fit for named policies, but `Guard` has no `withFallback()` - only `TypedGuard` does - and the fallback to the secondary provider is why these guards exist.
+
+**A thread-scoped marker, not a CDI qualifier.** `WorkloadContext.runAs("batch", ...)` selects the workload. A qualifier member has to be known when beans are wired, which would fix the set of workloads at build time and defeat declaring them in config. The marker is safe for the same reason the per-call fallback bridge is: SmallRye runs a synchronous action and its fallback handler on the calling thread. Work that hops threads must set the marker on the thread that actually calls the model.
+
+**A synchronous bulkhead rejects; it does not queue.** SmallRye queues excess callers only for asynchronous actions, and a chat completion is synchronous here, so exceeding `max-concurrent` raises `BulkheadException` immediately. That is why `fallback-on-reject` exists and is `false` for batch: without it, every throttled job would quietly re-target the fallback provider and do the work anyway, which is the opposite of throttling. Abandoning the run is safe because the jobs are re-runnable, audited when shutdown began abandoning them. `@Scheduled(concurrentExecution = SKIP)` covers the other half - a job overlapping *itself* - which the bulkhead does not address.
+
+**Readiness stays tied to `interactive`.** Other workloads' breakers are reported as data but never flip the status. Letting a background breaker take the instance out of rotation would rebuild, in the health layer, exactly the coupling this removes.
+
+Two findings behind this are recorded as executable tests in `BulkheadSemanticsProbeTest`, because the documentation does not state them: a bulkhead does not offload the fallback off the calling thread, and **duplicate circuit breaker names are accepted silently** on smallrye-fault-tolerance 6.11.2. The second corrects an earlier assumption in this project that the library rejects them; uniqueness is our invariant, which is why `WorkloadGuards.breakerName` derives it instead of accepting one.
+
 ## Shutdown
 
 A SIGTERM has to drain what the process is holding, and the drain has to be *waited on*. Both messaging adapters already had `@Observes ShutdownEvent` before this was addressed, and neither waited: Discord called `logout().subscribe(...)` and returned, Telegram interrupted its poll thread without joining it. Code that looks like a drain but returns immediately is worse than none, because it reads as solved.

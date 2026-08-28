@@ -3,12 +3,14 @@ package dev.omatheusmesmo.qlawkus.cognition;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.omatheusmesmo.qlawkus.metrics.AgentMeters;
+import dev.omatheusmesmo.qlawkus.model.WorkloadContext;
 import dev.omatheusmesmo.qlawkus.store.EpisodicStore;
 import dev.omatheusmesmo.qlawkus.store.FactStore;
 import dev.omatheusmesmo.qlawkus.store.MemorySource;
 import dev.omatheusmesmo.qlawkus.store.WorkingMemoryStore;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.scheduler.Scheduled.ConcurrentExecution;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.LocalDate;
@@ -34,9 +36,10 @@ public class EpisodicConsolidatorJob {
   @Inject
   EpisodicStore episodicStore;
 
-  @Scheduled(identity = "episodic-consolidator", cron = "{qlawkus.consolidator.cron:0 0 3 * * ?}")
+  @Scheduled(identity = "episodic-consolidator", concurrentExecution = ConcurrentExecution.SKIP, cron = "{qlawkus.consolidator.cron:0 0 3 * * ?}")
   void consolidate() {
-    meters.timeJob("episodic-consolidator", this::consolidateNow);
+    WorkloadContext.runAs(WorkloadContext.BATCH,
+        () -> meters.timeJob("episodic-consolidator", this::consolidateNow));
   }
 
   public void consolidateNow() {
